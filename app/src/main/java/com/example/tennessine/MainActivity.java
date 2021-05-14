@@ -11,33 +11,28 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
-import android.provider.OpenableColumns;
 import android.speech.tts.TextToSpeech;
-import android.util.Log;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.RadioButton;
 import android.widget.TextView;
 
 import com.google.android.material.snackbar.Snackbar;
 
-import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
 import java.net.ProtocolException;
 import java.net.URL;
 import java.net.URLConnection;
@@ -49,14 +44,17 @@ import java.util.Locale;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-public class MainActivity extends AppCompatActivity{
+public class MainActivity extends AppCompatActivity implements TextToSpeech.OnInitListener{
 
     private TextView textout;
     private static final int FILE_INTENT_CODE = 10;
     private static final int CAMERA_INTENT_CODE = 11;
     private boolean captionbool = true;
     private boolean yolobool = false;
+    // tts
+    private TextToSpeech tts;
 
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -88,8 +86,29 @@ public class MainActivity extends AppCompatActivity{
             captionbool = true;
             yolobool = false;
         });
+
+        // tts
+        // for some god forsaken reason getting tts to work requires
+        // targetting sdk 28 so make sure thats set in the gradle build
+        tts = new TextToSpeech(this, this);
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    public void speakText(String textContents) {
+        tts.speak(textContents, TextToSpeech.QUEUE_FLUSH, null, null);
+
+    }
+
+    @Override
+    public void onInit(int i) {
+        if (i == TextToSpeech.SUCCESS) {
+            //Setting speech Language
+            tts.setLanguage(Locale.ENGLISH);
+            tts.setPitch(1);
+        }
+    }
+
+    // callbacks after activity intents
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -126,6 +145,16 @@ public class MainActivity extends AppCompatActivity{
         return image;
     }
 
+    // open the camera to take a photo and save it
+
+    // potential improvement: also take photos without without opening the camera interface
+    // this open source app takes photos in the background so could be useful:
+    // https://github.com/nathan-osman/chronosnap
+    // would be far more accessible
+    // might pose issues with deprecation though.
+    // in the android documentation there are explanations on how to access the camera directly
+    // in a non deprecated and safe way:
+    // https://developer.android.com/guide/topics/media/camera#custom-camera
     private void dispatchTakePictureIntent(View view) {
         Intent takePictureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
         // Create the File where the photo should go
@@ -145,6 +174,7 @@ public class MainActivity extends AppCompatActivity{
         }
     }
 
+    // open the in built file explorer
     private void dispatchOpenPictureIntent(View view) {
         Intent fileIntent;
         fileIntent = new Intent(Intent.ACTION_GET_CONTENT);
@@ -164,13 +194,8 @@ public class MainActivity extends AppCompatActivity{
             Manifest.permission.WRITE_EXTERNAL_STORAGE
     };
 
-    /**
-     * Checks if the app has permission to write to device storage
-     * <p>
-     * If the app does not has permission then the user will be prompted to grant permissions
-     *
-     * @param activity
-     */
+    // checks if the app has permission to write to device storage
+    // if the app does not has permission then the user will be prompted to grant permissions
     public static void verifyStoragePermissions(Activity activity) {
         // Check if we have write permission
         int permission = ActivityCompat.checkSelfPermission(activity, Manifest.permission.WRITE_EXTERNAL_STORAGE);
@@ -189,10 +214,11 @@ public class MainActivity extends AppCompatActivity{
         Snackbar.make(view, s, Snackbar.LENGTH_LONG).setAction("Action", null).show();
     }
 
-    // these should probably be changeable in a settings page?
-    private static final String captionURL = "https://astatine.vulpinecitrus.info/captioning";
+    // these should probably be changeable in a settings page
+    private static final String resnetURL = "https://astatine.vulpinecitrus.info/resnet";
     private static final String yoloURL = "https://astatine.vulpinecitrus.info/yolo";
 
+    // upload an image given the path to the image in the filesystem
     private void uploadImage(String imagePath) {
         // shamelessly copied from
         // https://stackoverflow.com/questions/3324717/sending-http-post-request-in-java
@@ -205,11 +231,11 @@ public class MainActivity extends AppCompatActivity{
                     textout.setText("Connecting to server");
                     URL url = null;
                     if (captionbool)
-                        url = new URL(captionURL);
+                        url = new URL(resnetURL);
                     else if (yolobool)
                         url = new URL(yoloURL);
                     else
-                        throw new java.net.MalformedURLException("idfk");
+                        throw new Exception("issue with selector");
                     URLConnection con = url.openConnection();
 
                     textout.setText("Connected, sending image");
@@ -257,6 +283,8 @@ public class MainActivity extends AppCompatActivity{
                     String[] lines = result.split("\\r?\\n");
                     textout.setText("Description:\n" + lines[3]); // this is gross, sorry
 
+                    speakText(lines[3]);
+
                 } catch (java.net.MalformedURLException e) {
                     textout.setText("Malformed URL exception");
                     e.printStackTrace();
@@ -275,6 +303,7 @@ public class MainActivity extends AppCompatActivity{
         thread.start();
     }
 
+    // send file in post request
     @RequiresApi(api = Build.VERSION_CODES.KITKAT)
     private void sendFile(OutputStream out, String name, InputStream in, String fileName) throws IOException {
         String o = "Content-Disposition: form-data; name=\"" + URLEncoder.encode(name, "UTF-8")
@@ -286,6 +315,7 @@ public class MainActivity extends AppCompatActivity{
         out.write("\r\n".getBytes(StandardCharsets.UTF_8));
     }
 
+    // send text in post request
     @RequiresApi(api = Build.VERSION_CODES.KITKAT)
     private void sendField(OutputStream out, String name, String field) throws IOException {
         String o = "Content-Disposition: form-data; name=\""
