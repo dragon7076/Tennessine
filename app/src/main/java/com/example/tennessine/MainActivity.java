@@ -15,8 +15,10 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.storage.StorageManager;
 import android.provider.MediaStore;
 import android.speech.tts.TextToSpeech;
+import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -28,12 +30,14 @@ import com.google.android.material.snackbar.Snackbar;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.ProtocolException;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLEncoder;
@@ -44,7 +48,7 @@ import java.util.Locale;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-public class MainActivity extends AppCompatActivity implements TextToSpeech.OnInitListener{
+public class MainActivity extends AppCompatActivity implements TextToSpeech.OnInitListener {
 
     private TextView textout;
     private static final int FILE_INTENT_CODE = 10;
@@ -99,6 +103,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
     }
 
+    // tts
     @Override
     public void onInit(int i) {
         if (i == TextToSpeech.SUCCESS) {
@@ -109,25 +114,28 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     }
 
     // callbacks after activity intents
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        String path;
-        if (data != null) {
-            switch (requestCode) {
-                case FILE_INTENT_CODE:
-                    path = data.getData().getPath().split(":")[1]; // so, so gross. im so sorry
-                    textout.setText(path);
-                    uploadImage(path);
-                    break;
-                case CAMERA_INTENT_CODE:
-                    uploadImage(currentPhotoPath);
-                    break;
-            }
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent intent) {
+        super.onActivityResult(requestCode, resultCode, intent);
+        Log.d("I", Integer.toString(requestCode));
+        Log.d("I", intent == null ? "null" : "not null");
+        switch (requestCode) {
+            case FILE_INTENT_CODE:
+                if (intent != null) {
+                    Uri uri = intent.getData();
+                    Log.d("I", "uri from file: " + uri);
+                    uploadImage(uri);
+                }
+                break;
+            case CAMERA_INTENT_CODE:
+                Log.d("I", "uri from camera: " + currentPhotoUri);
+                uploadImage(currentPhotoUri);
+                break;
         }
     }
 
-    String currentPhotoPath;
+    Uri currentPhotoUri;
 
     private File createImageFile() throws IOException {
         // Create an image file name
@@ -141,7 +149,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         );
 
         // Save a file: path for use with ACTION_VIEW intents
-        currentPhotoPath = image.getAbsolutePath();
+        currentPhotoUri = Uri.fromFile(image);
         return image;
     }
 
@@ -179,6 +187,8 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         Intent fileIntent;
         fileIntent = new Intent(Intent.ACTION_GET_CONTENT);
         fileIntent.setType("*/*");
+        String[] types = {"image/png", "image/jpg", "image/jpeg"};
+        fileIntent.putExtra(Intent.EXTRA_MIME_TYPES, types);
         try {
             startActivityForResult(fileIntent, FILE_INTENT_CODE);
         } catch (ActivityNotFoundException e) {
@@ -214,12 +224,21 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         Snackbar.make(view, s, Snackbar.LENGTH_LONG).setAction("Action", null).show();
     }
 
+    private void textProgress(final String s) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                textout.setText(s);
+            }
+        });
+    }
+
     // these should probably be changeable in a settings page
     private static final String resnetURL = "https://astatine.vulpinecitrus.info/resnet";
     private static final String yoloURL = "https://astatine.vulpinecitrus.info/yolo";
 
     // upload an image given the path to the image in the filesystem
-    private void uploadImage(String imagePath) {
+    private void uploadImage(Uri imageUri) {
         // shamelessly copied from
         // https://stackoverflow.com/questions/3324717/sending-http-post-request-in-java
         // running in a thread to avoid android.os.networkonmainthreadexception
@@ -228,8 +247,8 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             @Override
             public void run() {
                 try {
-                    textout.setText("Connecting to server");
-                    URL url = null;
+                    textProgress("Connecting to server");
+                    URL url;
                     if (captionbool)
                         url = new URL(resnetURL);
                     else if (yolobool)
@@ -238,7 +257,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         throw new Exception("issue with selector");
                     URLConnection con = url.openConnection();
 
-                    textout.setText("Connected, sending image");
+                    textProgress("Connected, sending image");
                     HttpURLConnection http = (HttpURLConnection) con;
                     http.setRequestMethod("POST");
                     http.setDoOutput(true);
@@ -260,8 +279,8 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                     out.write(boundaryBytes);
 
                     // Send our file
-                    InputStream file = new FileInputStream(imagePath);
-                    String temp[] = imagePath.split("/");
+                    InputStream file = getContentResolver().openInputStream(imageUri);
+                    String temp[] = imageUri.getPath().split("/");
                     String fileName = temp[temp.length - 1];
                     sendFile(out, "image", file, fileName);
 
@@ -274,28 +293,31 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                     // Finish the request
                     out.write(finishBoundaryBytes);
 
-                    textout.setText("Sent, awaiting server response");
+                    textProgress("Sent, awaiting server response");
 
                     // Do something with http.getInputStream()
                     String result = new BufferedReader(new InputStreamReader(http.getInputStream()))
                             .lines().collect(Collectors.joining("\n"));
 
                     String[] lines = result.split("\\r?\\n");
-                    textout.setText("Description:\n" + lines[3]); // this is gross, sorry
+                    textProgress("Description:\n" + lines[3]); // this is gross, sorry
 
+                    speakText(lines[3]);
+                    // this is a strange hack that android studio suggested
+                    // not my fault
                     speakText(lines[3]);
 
                 } catch (java.net.MalformedURLException e) {
-                    textout.setText("Malformed URL exception");
+                    textProgress("Malformed URL exception");
                     e.printStackTrace();
                 } catch (ProtocolException e) {
-                    textout.setText("Protocol exception");
+                    textProgress("Protocol exception");
                     e.printStackTrace();
                 } catch (IOException e) {
-                    textout.setText("IO exception");
+                    textProgress("IO exception");
                     e.printStackTrace();
                 } catch (Exception e) {
-                    textout.setText("unexpected exception: " + e.getCause() + "\nplease try again");
+                    textProgress("unexpected exception: " + e.getCause() + "\nplease try again");
                     e.printStackTrace();
                 }
             }
